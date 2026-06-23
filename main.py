@@ -2,7 +2,8 @@ import asyncio
 
 from typing import TypedDict, Annotated, Optional
 from langchain_core.messages import AnyMessage, SystemMessage
-from langchain_openai import ChatOpenAI
+#from langchain_openai import ChatOpenAI
+from langchain_ollama import ChatOllama
 from langgraph.graph.message import add_messages
 from langgraph.graph import StateGraph, START
 from langgraph.prebuilt import ToolNode, tools_condition
@@ -62,44 +63,43 @@ def assistant(state: AgentState):
 
     # Define the core identity and guardrails for the model
     sys_msg = SystemMessage(content=f"""
-        You are a helpful language learning assistant. You have access to the following tools
+    You are a helpful language learning assistant. You have access to the following tools
         :{tesxtual_description_of_tools}
 
-        The user is going to give you a command.
-        
-        Your job is to check:
-        1. Which source language the user wants words from.
-        2. How many words they want.
-        
-        Here are some example workflows:
-        input: Get 20 random words in Spanish.
-        source language: Spanish
-        number of words: 20
-        
-        input: Get 10 random words in German.
-        source language: German
-        number of words: 10
+        CRITICAL REQUIREMENT: You must pull exactly {state.get('number_of_words', '5')} words 
+        for the language: {state.get('source_language', 'English')}. 
+        Ignore any conflicting numbers or languages mentioned in the human's chat message.
     """)
 
     # This line checks if this function node has been decorated or bound with tools.
     # It reads from 'assistant.tools' if it exists, ensuring the graph knows which
     # capabilities to expose to the LLM core during execution.
-    tools = assistant.tools if hasattr(assistant, 'tools') else []
+    #tools = assistant.tools if hasattr(assistant, 'tools') else []
+
+    tools = local_tools
 
     # Initialise the primary reasoning LLM engine (GPT-4o) -  not free :-\
-    llm = ChatOpenAI(model="gpt-4o")
+    #llm = ChatOpenAI(model="gpt-4o")
+
+    llm = ChatOllama(
+        model= "qwen3:8b",
+        temperature= 0
+    )
 
     # Bind the allowed tools directly to the model configuration.
     # We set parallel_tool_calls=False to force the agent to reason step-by-step
     # rather than firing off multiple external tool commands at the exact same time.
-    llm_with_tools = llm.bind_tools(tools, parallel_tool_calls=False)
+
+   # llm_with_tools = llm.bind_tools(tools, parallel_tool_calls=False)
+
+    llm_with_tools = llm.bind_tools(tools)
 
     # Invoke the model by feeding it the structural system message followed by
     # the entire historical chat conversation state, then return the updated message list.
     return {
         "messages": [llm_with_tools.invoke([sys_msg] + state["messages"])],
-        "source_language": state ["source_language"],
-        "number_of_words": state["number_of_words"]
+        #"source_language": state ["source_language"],
+        #"number_of_words": state["number_of_words"]
     }
 
 # =====================================================================
@@ -110,15 +110,15 @@ async def build_graph():
 
     # Dynamically bind our tool array onto the function object itself.
     # This fulfills the 'hasattr(assistant, "tools")' check inside the node.
-    tools = await setup_tools()
-    assistant.tools = tools
+    #tools = await setup_tools()
+    #assistant.tools = tools
 
     # Initialise the graph builder configuration with our strict message state schem
     builder = StateGraph(AgentState)
 
     # Define our two processing checkpoints (Nodes)
     builder.add_node("assistant", assistant)
-    builder.add_node("tools", ToolNode(tools))
+    builder.add_node("tools", ToolNode(local_tools))
 
     # Define execution paths (Edges)
     # Entry Point: Send the conversation directly into the assistant brain first
@@ -142,24 +142,16 @@ async def build_graph():
 
 if __name__ == "__main__":
     async def visualise_and_test():
-        # 1. Compile the graph structural layout
-        app = await build_graph()
-        print("🎉 Graph compiled successfully. Generating visualisation...")
-
+        print("🎉 Graph compiling...")
         try:
-            # 2. Extract the visual layout and render it as PNG binary data
-            #    Using 'draw_mermaid_png' creates the flowchart automatically
-            image_data = app.get_graph().draw_mermaid_png()
+            # Call your async graph compiler with await
+            app = await build_graph()
 
-            # 3. Save the binary image data to a local file in your workspace
+            image_data = app.get_graph().draw_mermaid_png()
             with open("graph_flowchart.png", "wb") as f:
                 f.write(image_data)
-            print("💾 Success! Open 'graph_flowchart.png' in your project tree to see your graph layout.")
-
+            print("💾 Success! Open 'graph_flowchart.png' in your project tree.")
         except Exception as e:
             print(f"⚠️ Could not generate image file automatically: {e}")
-            print("💡 Tip: Ensure you have the 'pygraphvis' or internet access for the Mermaid renderer to fetch.")
 
-
-    # Execute the asynchronous visualisation workflow
     asyncio.run(visualise_and_test())

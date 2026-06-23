@@ -21,9 +21,12 @@ def get_n_random_words(language: str, n:int, ) -> list:
     with open(path) as f:
         word_list = json.load(f)
 
-    # 3. Use random.sample to pick 'n' unique random keys (IDs) from the word list dictionary.
-    #    Then, build a smaller temporary dictionary containing only those selected items.
-    random_word_dict = {k: word_list[k] for k in random.sample(list(word_list.keys()) , n)}
+        # 3. Convert n to an integer to prevent crashes from state string inputs,
+        #    and cap it to the total available words to prevent sample size errors.
+        safe_n = min(int(n), len(word_list))
+
+        random_keys = random.sample(list(word_list.keys()), safe_n)
+        random_word_dict = {k: word_list[k] for k in random_keys}
 
     # 4. Extract just the raw text token (the actual string word) from each selected item object.
     random_words = [item["word"] for item in random_word_dict.values()]
