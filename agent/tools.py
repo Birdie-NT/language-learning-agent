@@ -33,3 +33,54 @@ def get_n_random_words(language: str, n:int, ) -> list:
 
     # 5. Send the final list of words back to the calling LangGraph agent state loop.
     return random_words
+
+
+@tool
+
+def get_n_random_words_by_difficulty_level(language: str,
+                                           difficulty_level: str,
+                                           n:int) -> list:
+    """
+    Retrieves a specified number of random words filtered by a given difficulty level
+    from a word list corresponding to a specific language. The function reads the
+    word list from a JSON file located in the directory `data/{language}/word-list-cleaned.json`.
+
+    :param language: The language of the word list to be used.
+    :type language: str
+    :param difficulty_level: The difficulty level to filter words by. Possible values
+        depend on the data structure in the JSON file.The only valid values are 'beginner',
+        'intermediate', and 'advanced'.
+    :type difficulty_level: str
+    :param n: The number of random words to retrieve.
+    :type n: int
+    :return: A list containing `n` random words filtered by the specified difficulty level.
+    :rtype: list
+    """
+    path = os.path.join("data", f"{language}" , "word-list-cleaned.json")
+
+    with open(path) as f:
+        word_list = json.load(f)
+
+    # 1. Filter dictionary items matching the requested difficulty level string
+    #    (e.g., 'beginner', 'intermediate', 'advanced')
+    words_filtered_by_difficulty = {
+        k: v for k, v in word_list.items()
+        if v.get("word_difficulty") == difficulty_level.lower().strip()
+    }
+
+    # 2. Fallback: If no words match the filter, avoid crashing by using the whole list
+    if not words_filtered_by_difficulty:
+        words_filtered_by_difficulty = word_list
+
+    # 3. SAFE GUARDS: Cast n to int to handle UI string states,
+    #    and cap it to available keys to prevent sample size errors.
+    safe_n = min(int(n), len(words_filtered_by_difficulty))
+
+    # 4. Extract truly random samples out of the filtered sub-pool
+    random_keys = random.sample(list(words_filtered_by_difficulty.keys()), safe_n)
+    random_word_dict = {k: words_filtered_by_difficulty[k] for k in random_keys}
+
+    # 5. Extract the string value token to return clean vocabulary words
+    random_words = [item["word"] for item in random_word_dict.values()]
+
+    return random_words
