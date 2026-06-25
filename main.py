@@ -13,7 +13,8 @@ from dotenv import load_dotenv
 # Import the custom tools we defined inside our agent directory
 from agent.tools import (
     get_n_random_words,
-    get_n_random_words_by_difficulty_level
+    get_n_random_words_by_difficulty_level,
+    translate_words
 )
 
 load_dotenv()
@@ -29,6 +30,7 @@ class AgentState(TypedDict):
     source_language: Optional[str]
     number_of_words: Optional[str]
     word_difficulty: Optional[str]
+    target_language: Optional[str]
 
 
 # =====================================================================
@@ -37,7 +39,8 @@ class AgentState(TypedDict):
 # These are the additional capabilities the agent can use to achieve a goal.
 local_tools = [
     get_n_random_words,
-    get_n_random_words_by_difficulty_level
+    get_n_random_words_by_difficulty_level,
+    translate_words
 ]
 
 # This mimics the setup to cleanly bridge tools onto the node attributes.
@@ -81,21 +84,54 @@ def assistant(state: AgentState):
     :type n: int
     :return: A list containing `n` random words filtered by the specified difficulty level.
     :rtype: list
+    
+  
+    Translates a list of words from a source language to a target language.
+    Leverages an LLM invocation and enforces a strict JSON output shape.
+
+    :param random_words: List of string tokens/words to translate.
+    :param source_language: The language the vocabulary words currently belong to.
+    :param target_language: The language you want the words translated into.
+    :return: A structured Python dictionary containing original and translated pairs.
+          
     """
 
     # Define the core identity and guardrails for the model
     sys_msg = SystemMessage(content=f"""
-    You are a helpful language learning assistant. You have access to the following tools
-        :{tesxtual_description_of_tools}
+    You are a helpful language learning assistant. You have access to the following tools:
+    {tesxtual_description_of_tools}
 
-    CRITICAL REQUIREMENT: You must pull exactly {state.get('number_of_words', '5')} words 
-    for the language: {state.get('source_language', 'English')} with a difficulty level of: {state.get('word_difficulty', 'any')}.
-    Ignore any conflicting numbers, languages, or difficulties mentioned in the human's chat message.
+    YOUR JOB IS TO EXTRACT AND VERIFY:
+    1. Which source language the user wants words from.
+    2. How many words they want.
+    3. Whether they want words of a specific difficulty or just random words.
+    4. Whether they want these words translated into a target language.
 
-   FORMATTING RULES:
-  - Always put the numbered words to the left.
-  - Keep definitions, meanings, and examples on completely separate lines (do not put them on the same line as the word).
-""")
+    CRITICAL REQUIREMENT:
+    You must pull exactly {state.get('number_of_words', '5')} words for the language: {state.get('source_language', 'English')} with a difficulty level of: {state.get('word_difficulty', 'any')}. 
+    If a translation is requested, you must route those words to the translation tool targeting: {state.get('target_language', 'None')}.
+    Ignore any conflicting numbers, languages, or difficulties mentioned directly in the human's chat message. Rely strictly on the validated graph state parameters.
+
+    Here are some example workflows to follow:
+    input: Get 20 random words in Spanish.
+    source language: Spanish
+    number of words: 20
+
+    input: Get 10 hard words in German.
+    source language: German
+    number of words: 10
+    word difficulty: advanced
+
+    input: Get 15 random words in English and translate them to Spanish.
+    source language: English
+    number of words: 15
+    word difficulty: beginner
+    target language: Spanish
+
+    FORMATTING RULES:
+    - Always put the numbered words to the left.
+    - Keep definitions, meanings, and examples on completely separate lines (do not put them on the same line as the word).
+    """)
 
     # This line checks if this function node has been decorated or bound with tools.
     # It reads from 'assistant.tools' if it exists, ensuring the graph knows which
@@ -126,7 +162,8 @@ def assistant(state: AgentState):
         "messages": [llm_with_tools.invoke([sys_msg] + state["messages"])],
         "source_language": state ["source_language"],
         "number_of_words": state["number_of_words"],
-        "number_difficulty": state["word_difficulty"]
+        "number_difficulty": state["word_difficulty"],
+        "target_language": state.get("target_language")
     }
 
 # =====================================================================
@@ -195,7 +232,8 @@ if __name__ == "__main__":
                 "messages": messages,
                 "source_language": "",
                 "number_of_words": 0,
-                "word_difficulty": ""
+                "word_difficulty": "",
+                "target_language":""
             })
 
             # 5. Extract and display the terminal output response from the graph agent
