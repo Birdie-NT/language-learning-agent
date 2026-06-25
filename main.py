@@ -12,7 +12,8 @@ from dotenv import load_dotenv
 
 # Import the custom tools we defined inside our agent directory
 from agent.tools import (
-    get_n_random_words
+    get_n_random_words,
+    get_n_random_words_by_difficulty_level
 )
 
 load_dotenv()
@@ -27,6 +28,7 @@ class AgentState(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]
     source_language: Optional[str]
     number_of_words: Optional[str]
+    word_difficulty: Optional[str]
 
 
 # =====================================================================
@@ -35,6 +37,7 @@ class AgentState(TypedDict):
 # These are the additional capabilities the agent can use to achieve a goal.
 local_tools = [
     get_n_random_words,
+    get_n_random_words_by_difficulty_level
 ]
 
 # This mimics the setup to cleanly bridge tools onto the node attributes.
@@ -59,6 +62,25 @@ def assistant(state: AgentState):
     :param language: A string representing the language for which to fetch the word list.
     :param n: An integer specifying the number of random words to retrieve.
     :return: A list containing `n` randomly selected words.
+    
+    def get_n_random_words_by_difficulty_level(language: str,
+                                           difficulty_level: str,
+                                           n:int) -> list:
+    
+    Retrieves a specified number of random words filtered by a given difficulty level
+    from a word list corresponding to a specific language. The function reads the
+    word list from a JSON file located in the directory `data/{language}/word-list-cleaned.json`.
+
+    :param language: The language of the word list to be used.
+    :type language: str
+    :param difficulty_level: The difficulty level to filter words by. Possible values
+        depend on the data structure in the JSON file.The only valid values are 'beginner',
+        'intermediate', and 'advanced'.
+    :type difficulty_level: str
+    :param n: The number of random words to retrieve.
+    :type n: int
+    :return: A list containing `n` random words filtered by the specified difficulty level.
+    :rtype: list
     """
 
     # Define the core identity and guardrails for the model
@@ -66,10 +88,14 @@ def assistant(state: AgentState):
     You are a helpful language learning assistant. You have access to the following tools
         :{tesxtual_description_of_tools}
 
-        CRITICAL REQUIREMENT: You must pull exactly {state.get('number_of_words', '5')} words 
-        for the language: {state.get('source_language', 'English')}. 
-        Ignore any conflicting numbers or languages mentioned in the human's chat message.
-    """)
+    CRITICAL REQUIREMENT: You must pull exactly {state.get('number_of_words', '5')} words 
+    for the language: {state.get('source_language', 'English')} with a difficulty level of: {state.get('word_difficulty', 'any')}.
+    Ignore any conflicting numbers, languages, or difficulties mentioned in the human's chat message.
+
+   FORMATTING RULES:
+  - Always put the numbered words to the left.
+  - Keep definitions, meanings, and examples on completely separate lines (do not put them on the same line as the word).
+""")
 
     # This line checks if this function node has been decorated or bound with tools.
     # It reads from 'assistant.tools' if it exists, ensuring the graph knows which
@@ -98,8 +124,9 @@ def assistant(state: AgentState):
     # the entire historical chat conversation state, then return the updated message list.
     return {
         "messages": [llm_with_tools.invoke([sys_msg] + state["messages"])],
-        #"source_language": state ["source_language"],
-        #"number_of_words": state["number_of_words"]
+        "source_language": state ["source_language"],
+        "number_of_words": state["number_of_words"],
+        "number_difficulty": state["word_difficulty"]
     }
 
 # =====================================================================
@@ -141,17 +168,41 @@ async def build_graph():
 
 
 if __name__ == "__main__":
+    import asyncio
+    from langchain_core.messages import HumanMessage
+
     async def visualise_and_test():
         print("🎉 Graph compiling...")
         try:
-            # Call your async graph compiler with await
+            # 1. Compile the graph
             app = await build_graph()
 
+            # 2. Generate and save your flowchart visualisation
             image_data = app.get_graph().draw_mermaid_png()
             with open("graph_flowchart.png", "wb") as f:
                 f.write(image_data)
             print("💾 Success! Open 'graph_flowchart.png' in your project tree.")
+
+            print("\n🚀 Running interactive graph execution test...")
+
+            # 3. Dynamically capture your request directly from the terminal console
+            user_prompt = input("Type your request (e.g., 'Give me 5 French beginner words'): ")
+
+            messages = [HumanMessage(content=user_prompt)]
+
+            # 4. Invoke the graph asynchronously with your custom initial state map
+            result = await app.ainvoke({ # type: ignore
+                "messages": messages,
+                "source_language": "",
+                "number_of_words": 0,
+                "word_difficulty": ""
+            })
+
+            # 5. Extract and display the terminal output response from the graph agent
+            print("\n📥 Agent Response:")
+            print(result["messages"][-1].content)
+
         except Exception as e:
-            print(f"⚠️ Could not generate image file automatically: {e}")
+            print(f"⚠️ An error occurred during execution: {e}")
 
     asyncio.run(visualise_and_test())
