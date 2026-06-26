@@ -132,16 +132,26 @@ def translate_words(random_words: list, source_language: str, target_language: s
         # 4. JSON parsing pipeline with a regex extraction fallback strategy.
         try:
             # First pass: Attempt a clean, direct parse assuming the LLM followed instructions perfectly.
-            parsed = json.loads(text)
+            parsed = json.loads(text.strip())
         except Exception:
             import re
+
+            # Clean common markdown wrappers out of the text before running regex
+            clean_text = text.replace("```json", "").replace("```", "").strip()
+
             # Fallback pass: If the LLM wrapped its reply in markdown text or extra descriptions,
             # use a regular expression to isolate the first complete curly brace { ... } JSON block.
             # re.DOTALL ensures that the dot (.) character captures line breaks seamlessly.
-            match = re.search(r"\{.*\}", text, re.DOTALL)
+            match = re.search(r"\{.*?\}", clean_text, re.DOTALL)
 
-            # If a match is found, parse the captured string subset; otherwise, fall back to an empty dict.
-            parsed = json.loads(match.group(0)) if match else {}
+            if match:
+                try:
+                    parsed = json.loads(match.group(0))
+                except Exception:
+                    # If it still fails due to trailing commas or quotes, fall back safely
+                    parsed = {}
+            else:
+                parsed = {}
 
             translation_list = parsed.get("translations", [])
             model_map = {item.get("source"): item.get("target") for item in translation_list if isinstance(item, dict)}
