@@ -1,171 +1,154 @@
-import os
 import json
 import random
-
-from langchain_core.tools  import tool
+from typing import List, Dict
+from langchain_core.tools import tool
 from langchain_ollama import ChatOllama
-from langchain_core.messages import HumanMessage
+import logging
 
+logging.getLogger("langchain_core.callbacks.manager").setLevel(logging.ERROR)
 
-translation_model = ChatOllama(
-    model = "llama3.2:3b",
-    temperature = 0.7
-)
+# reasoning=False: Qwen3 "thinks" by default, and its <think>...</think>
+# block leaks into response.content, breaking json.loads() below.
+_generation_llm = ChatOllama(model="qwen3:8b", temperature=0.8, reasoning=False)
+_translation_llm = ChatOllama(model="qwen3:8b", temperature=0.0, reasoning=False)
 
-# The @tool decorator tells LangGraph that this function is an official capability
-# that the AI Agent can choose to execute when it needs to look up words.
-@tool
-def get_n_random_words(language: str, n:int, ) -> list:
-    """
-        Looks up and returns a list of N random words from the cleaned dataset
-        for a specific target language.
-        """
-
-    # 1. Construct the dynamic system file path based on the user's requested language.
-    #    Example output path: 'data/spanish/word-list-cleaned.json'
-    path = os.path.join("data", f"{language}", "word-list-cleaned.json")
-
-    # 2. Open the specific JSON file and load the dictionary dataset into memory.
-    with open(path) as f:
-        word_list = json.load(f)
-
-        # 3. Convert n to an integer to prevent crashes from state string inputs,
-        #    and cap it to the total available words to prevent sample size errors.
-        safe_n = min(int(n), len(word_list))
-
-        random_keys = random.sample(list(word_list.keys()), safe_n)
-        random_word_dict = {k: word_list[k] for k in random_keys}
-
-    # 4. Extract just the raw text token (the actual string word) from each selected item object.
-    random_words = [item["word"] for item in random_word_dict.values()]
-
-    # 5. Send the final list of words back to the calling LangGraph agent state loop.
-    return random_words
-
-
-@tool
-
-def get_n_random_words_by_difficulty_level(language: str,
-                                           difficulty_level: str,
-                                           n:int) -> list:
-    """
-    Retrieves a specified number of random words filtered by a given difficulty level
-    from a word list corresponding to a specific language. The function reads the
-    word list from a JSON file located in the directory `data/{language}/word-list-cleaned.json`.
-
-    :param language: The language of the word list to be used.
-    :type language: str
-    :param difficulty_level: The difficulty level to filter words by. Possible values
-        depend on the data structure in the JSON file.The only valid values are 'beginner',
-        'intermediate', and 'advanced'.
-    :type difficulty_level: str
-    :param n: The number of random words to retrieve.
-    :type n: int
-    :return: A list containing `n` random words filtered by the specified difficulty level.
-    :rtype: list
-    """
-
-
-    path = os.path.join("data", f"{language}" , "word-list-cleaned.json")
-
-    with open(path) as f:
-        word_list = json.load(f)
-
-    # 1. Filter dictionary items matching the requested difficulty level string
-    #    (e.g., 'beginner', 'intermediate', 'advanced')
-    words_filtered_by_difficulty = {
-        k: v for k, v in word_list.items()
-        if v.get("word_difficulty") == difficulty_level.lower().strip()
+# High-quality fallback vocabulary list in case the local LLM is temporarily busy or offline
+FALLBACK_VOCABULARY = {
+    "english": {
+        "beginner": ["apple", "house", "book", "friend", "school", "family", "water", "bread", "happy", "morning"],
+        "intermediate": ["challenge", "develop", "decision", "community", "schedule", "dangerous", "standard",
+                         "creative"],
+        "advanced": ["meticulous", "ephemeral", "cacophony", "exacerbate", "scrutinize", "ambiguity", "transient"]
+    },
+    "spanish": {
+        "beginner": ["manzana", "casa", "libro", "amigo", "escuela", "familia", "agua", "pan", "feliz", "mañana"],
+        "intermediate": ["desafío", "desarrollo", "decisión", "comunidad", "horario", "peligroso", "estándar",
+                         "creativo"],
+        "advanced": ["meticuloso", "efímero", "cacofonía", "exacerbar", "escudriñar", "ambigüedad", "transitorio"]
     }
+}
 
-    # 2. Fallback: If no words match the filter, avoid crashing by using the whole list
-    if not words_filtered_by_difficulty:
-        words_filtered_by_difficulty = word_list
-
-    # 3. SAFE GUARDS: Cast n to int to handle UI string states,
-    #    and cap it to available keys to prevent sample size errors.
-    safe_n = min(int(n), len(words_filtered_by_difficulty))
-
-    # 4. Extract truly random samples out of the filtered sub-pool
-   # random_keys = random.sample(list(words_filtered_by_difficulty.keys()), safe_n)
-   # random_word_dict = {k: words_filtered_by_difficulty[k] for k in random_keys}
-
-    sampled_data = random.sample(list(word_list.values()), safe_n)
-
-    # 5. Extract the string value token to return clean vocabulary words
-    random_words = [item["word"] for item in sampled_data]
-
-    return random_words
 
 @tool
-def translate_words(random_words: list, source_language: str, target_language: str) -> dict:
-        """
-        Translates a list of words from a source language to a target language.
-        Leverages an LLM invocation and enforces a strict JSON output shape.
+def get_n_random_words(language: str, n: int) -> List[str]:
+    """
+    Dynamically generates a specified number of random, real-world, conversational words in a target language.
 
-        :param random_words: List of string tokens/words to translate.
-        :param source_language: The language the vocabulary words currently belong to.
-        :param target_language: The language you want the words translated into.
-        :return: A structured Python dictionary containing original and translated pairs.
-        """
+    Args:
+        language: The target language, e.g. 'english', 'french', 'german'.
+    """
+    lang = language.lower().strip()
 
-        # 1. Build a structured multiline instruction string for the translation engine.
-        #    Uses double curly braces {{ }} to escape literal JSON syntax inside the f-string.
-        prompt = (
-            f"You are a precise translation engine.\n"
-            f"Translate each of the following {len(random_words)} words from {source_language} to {target_language}.\n"
-            f"Return ONLY valid JSON with this exact structure:\n"
-            f'{{"translations": [{{"source": "<original>", "target": "<translated>"}}], ...}}\n'
-            f"No explanations, no extra fields, no markdown.\n"
-            f"Words: {json.dumps(random_words, ensure_ascii=False)}"
-        # ensure_ascii=False preserves non-English scripts natively
-        )
+    prompt = f"""
+    Generate a list of exactly {n} unique, highly common, everyday conversational words in {lang}.
+    Do not include obscure words, abbreviations, names, or technical jargon.
+    Return ONLY a valid JSON array of strings. No conversational text, no markdown formatting.
+    Example output format: ["word1", "word2", "word3"]
+    """
 
-        # 2. Package the prompt string into a LangChain HumanMessage and send it to the model.
-        #    Make sure 'translation_model' is instantiated and available in your script's scope.
-        response = translation_model.invoke([HumanMessage(content=prompt)])
+    try:
+        response = _generation_llm.invoke(prompt)
+        clean_content = response.content.replace("```json", "").replace("```", "").strip()
+        words = json.loads(clean_content)
+        if isinstance(words, list) and len(words) > 0:
+            return [str(w).lower().strip() for w in words[:n]]
+    except Exception as e:
+        print(f"generation failed: {e}")
+        pass
 
-        # 3. Safely extract the raw string text content out of the model response object.
-        #    Uses getattr as a bulletproof fallback in case response structure varies.
-        text = getattr(response, "content", str(response))
+    # Fallback logic if LLM generation fails
+    all_fallbacks = []
+    for level in FALLBACK_VOCABULARY.get(lang, {}):
+        all_fallbacks.extend(FALLBACK_VOCABULARY[lang][level])
+    return random.sample(all_fallbacks, min(n, len(all_fallbacks)))
 
-        # 4. JSON parsing pipeline with a regex extraction fallback strategy.
-        try:
-            # First pass: Attempt a clean, direct parse assuming the LLM followed instructions perfectly.
-            parsed = json.loads(text.strip())
-        except Exception:
-            import re
 
-            # Clean common markdown wrappers out of the text before running regex
-            clean_text = text.replace("```json", "").replace("```", "").strip()
+@tool
+def get_n_random_words_by_difficulty_level(language: str, difficulty_level: str, n: int) -> List[str]:
+    """
+    Dynamically generates real, meaningful words filtered by a given difficulty level ('beginner', 'intermediate', 'advanced').
 
-            # Fallback pass: If the LLM wrapped its reply in markdown text or extra descriptions,
-            # use a regular expression to isolate the first complete curly brace { ... } JSON block.
-            # re.DOTALL ensures that the dot (.) character captures line breaks seamlessly.
-            match = re.search(r"\{.*?\}", clean_text, re.DOTALL)
+    Args:
+        language: The target language, e.g. 'english', 'french', 'german'.
+        difficulty_level: The vocabulary tier ('beginner', 'intermediate', or 'advanced').
+        n: The number of words to retrieve.
+    """
+    lang = language.lower().strip()
 
-            if match:
-                try:
-                    parsed = json.loads(match.group(0))
-                except Exception:
-                    # If it still fails due to trailing commas or quotes, fall back safely
-                    parsed = {}
-            else:
-                parsed = {}
+    diff = difficulty_level.lower().strip()
+    if diff not in ["beginner", "intermediate", "advanced"]:
+        diff = "beginner"
 
-            translation_list = parsed.get("translations", [])
-            model_map = {item.get("source"): item.get("target") for item in translation_list if isinstance(item, dict)}
+    prompt = f"""
+    Generate a list of exactly {n} unique, everyday conversational words in {lang} suitable for a {diff} level language learner.
+    Do not include obscure words, names, abbreviations, or symbols.
+    Return ONLY a valid JSON array of strings. No other text.
+    Example output format: ["word1", "word2", "word3"]
+    """
 
-            # Ensure we return translations in the same order as input; fall back to identity if missing
-            ordered_translations = [
-                {"source": w, "target": model_map.get(w, model_map.get(w.capitalize(), w))}
+    try:
+        response = _generation_llm.invoke(prompt)
+        clean_content = response.content.replace("```json", "").replace("```", "").strip()
+        words = json.loads(clean_content)
+        if isinstance(words, list) and len(words) > 0:
+            return [str(w).lower().strip() for w in words[:n]]
+    except Exception as e:
+        print(f"generation failed: {e}")
+        pass
+
+    # Fallback logic if LLM generation fails
+    pool = FALLBACK_VOCABULARY.get(lang, {}).get(diff, [])
+    return random.sample(pool, min(n, len(pool)))
+
+
+@tool
+def translate_words(random_words: List[str], source_language: str, target_language: str) -> List[Dict[str, str]]:
+    """
+    Translates a list of words from a source language to a target language dynamically.
+
+    Args:
+        random_words: List of words to translate.
+        source_language: The language of the words in the list.
+        target_language: The language to translate the words into.
+    """
+    results = []
+    if not random_words:
+        return results
+
+    prompt = f"""
+    Translate the following list of {source_language} words into {target_language}.
+    Words list: {random_words}
+
+    Provide your output strictly as a valid JSON array of objects, where each object has "original" and "translation" keys.
+    No conversational text, no introductions, no markdown formatting.
+    Example output:
+    [{{"original": "dog", "translation": "perro"}}]
+    """
+
+    # Rebuild the result in the same order/length as random_words, regardless
+    # of how the model ordered its response. Any word the model dropped or
+    # renamed falls back to the "[word translation]" placeholder below.
+    try:
+        response = _translation_llm.invoke(prompt)
+        clean_content = response.content.replace("```json", "").replace("```", "").strip()
+        translations = json.loads(clean_content)
+        if isinstance(translations, list):
+            lookup = {
+                str(t.get("original", "")).lower().strip(): t.get("translation")
+                for t in translations if isinstance(t, dict)
+            }
+            return [
+                {"original": w, "translation": lookup.get(w.lower().strip(), f"[{w} translation]")}
                 for w in random_words
             ]
+    except Exception as e:
+        print(f"generation failed: {e}")
+        pass
 
-            # 5. Package the ordered translation results into the final payload structure.
-            #    This returns the expected schema back to the LangGraph node.
-            return {
-                "translations": ordered_translations,
-                "source_language": source_language,
-                "target_language": target_language
-            }
+    # Basic backup fallback if translation call fails
+    for word in random_words:
+        results.append({
+            "original": word,
+            "translation": f"[{word} translation]"
+        })
+    return results
